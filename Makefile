@@ -4,8 +4,8 @@ CC = x86_64-w64-mingw32-gcc-posix
 WINDRES = x86_64-w64-mingw32-windres
 WIXL = wixl
 
-CFLAGS = -O2 -Wall -mwindows -fno-ident -fno-stack-protector
-LDFLAGS = -s -Wl,--subsystem,windows:6.0 -Wl,--nxcompat -Wl,--dynamicbase -Wl,--high-entropy-va -lgdi32 -lcomctl32 -lcomdlg32
+CFLAGS = -O2 -Wall -mwindows -nostartfiles -fno-ident -fno-stack-protector -fno-asynchronous-unwind-tables
+LDFLAGS = -e Paint3DEntry -s -Wl,--subsystem,windows:6.0 -Wl,--nxcompat -Wl,--dynamicbase -Wl,--high-entropy-va -lkernel32 -luser32 -lgdi32 -lcomctl32 -lcomdlg32
 
 all: Paint3D.exe Paint3D.msi
 

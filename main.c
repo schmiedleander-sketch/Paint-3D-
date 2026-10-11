@@ -2,13 +2,37 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <math.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// Custom memory allocation wrappers using HeapAlloc/HeapFree (no C CRT dependency)
+static void* AppAlloc(size_t size) {
+    return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+}
+
+static void* AppRealloc(void* ptr, size_t size) {
+    if (!ptr) return HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, size);
+    return HeapReAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, ptr, size);
+}
+
+static void AppFree(void* ptr) {
+    if (ptr) HeapFree(GetProcessHeap(), 0, ptr);
+}
+
+static size_t AppStrLen(const char *str) {
+    size_t len = 0;
+    while (str && str[len]) len++;
+    return len;
+}
+
+static void AppStrCpy(char *dest, const char *src) {
+    while (*src) {
+        *dest++ = *src++;
+    }
+    *dest = '\0';
+}
 
 // Tool types
 typedef enum {
@@ -22,25 +46,20 @@ typedef enum {
     TOOL_PENCIL,
     TOOL_ERASER,
     TOOL_FILL,
-    // 2D Shapes
     TOOL_2D_LINE,
     TOOL_2D_RECT,
     TOOL_2D_CIRCLE,
     TOOL_2D_STAR,
-    // 3D Shapes
     TOOL_3D_CUBE,
     TOOL_3D_SPHERE,
     TOOL_3D_CYLINDER,
     TOOL_3D_CONE,
     TOOL_3D_TORUS,
-    // Stickers
     TOOL_STICKER_SMILEY,
     TOOL_STICKER_HEART,
-    // Text
     TOOL_TEXT
 } ToolType;
 
-// Tab Categories
 typedef enum {
     TAB_BRUSHES,
     TAB_2D_SHAPES,
@@ -51,7 +70,6 @@ typedef enum {
     TAB_CANVAS
 } TabCategory;
 
-// 3D Point & Vector structures
 typedef struct {
     double x, y, z;
 } Vec3;
@@ -67,14 +85,13 @@ typedef struct {
     Triangle3D *triangles;
     int num_triangles;
     Vec3 pos;
-    Vec3 rot; // euler angles in degrees
+    Vec3 rot;
     Vec3 scale;
     COLORREF color;
     char name[32];
     BOOL selected;
 } Object3D;
 
-// Global Application State
 typedef struct {
     HWND hwndMain;
     HWND hwndToolbar;
@@ -85,45 +102,34 @@ typedef struct {
     TabCategory currentTab;
     ToolType currentTool;
 
-    // Brush Properties
     COLORREF primaryColor;
     int brushThickness;
 
-    // Canvas dimensions
     int canvasWidth;
     int canvasHeight;
     COLORREF canvasBgColor;
 
-    // Drawing Bitmaps
     HBITMAP hbmCanvas;
     HDC hdcCanvas;
     void *pixelBuffer;
 
-    // Undo Stack
     HBITMAP hbmUndoStack[10];
     int undoCount;
 
-    // 3D World Objects
     Object3D *objects3D;
     int numObjects3D;
     int selectedObjectIndex;
 
-    // Lighting
     Vec3 lightDir;
-
-    // Effects / Themes
     int activeEffect;
 
-    // Interactive mouse state
     BOOL isDrawing;
     POINT lastMousePos;
     POINT startMousePos;
 
-    // Font for Text tool
     char textBuffer[256];
     int fontSize;
 
-    // Dynamic Color Palette
     COLORREF palette[20];
     int paletteCount;
     COLORREF customColors[16];
@@ -131,7 +137,6 @@ typedef struct {
 
 static AppState g_App;
 
-// UI Control IDs
 #define ID_TAB_BRUSHES    101
 #define ID_TAB_2D         102
 #define ID_TAB_3D         103
@@ -151,7 +156,6 @@ static AppState g_App;
 #define ID_EFFECT_START   600
 #define ID_EDIT_TEXT      701
 
-// Declarations
 void InitCanvasBitmap(int w, int h);
 void PushUndoState();
 void PerformUndo();
@@ -164,7 +168,6 @@ void ExportToOBJ(const char *filename);
 void ExportToPNG(const char *filename);
 void BuildSidebarControls();
 
-// Math helper functions
 static Vec3 Vec3_Add(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
 static Vec3 Vec3_Sub(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
 static double Vec3_Dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
@@ -211,7 +214,7 @@ void InitCanvasBitmap(int w, int h) {
     BITMAPINFO bmi = {0};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = w;
-    bmi.bmiHeader.biHeight = -h; // Top-down
+    bmi.bmiHeader.biHeight = -h;
     bmi.bmiHeader.biPlanes = 1;
     bmi.bmiHeader.biBitCount = 32;
     bmi.bmiHeader.biCompression = BI_RGB;
@@ -369,7 +372,7 @@ void Draw2DShape(HDC hdcTarget, int x1, int y1, int x2, int y2) {
             SetTextColor(hdcTarget, g_App.primaryColor);
             SetBkMode(hdcTarget, TRANSPARENT);
             TextOutA(hdcTarget, x1, y1, g_App.textBuffer[0] ? g_App.textBuffer : "Paint 3D Text",
-                     g_App.textBuffer[0] ? strlen(g_App.textBuffer) : 13);
+                     g_App.textBuffer[0] ? (int)AppStrLen(g_App.textBuffer) : 13);
             SelectObject(hdcTarget, hOldFont);
             DeleteObject(hFont);
             break;
@@ -392,17 +395,17 @@ void Add3DPrimitive(ToolType tool) {
     obj.selected = TRUE;
 
     if (tool == TOOL_3D_CUBE) {
-        strcpy(obj.name, "3D Cube");
+        AppStrCpy(obj.name, "3D Cube");
         obj.num_vertices = 8;
-        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * 8);
+        obj.vertices = (Vec3*)AppAlloc(sizeof(Vec3) * 8);
         Vec3 v[8] = {
             {-1, -1, -1}, {1, -1, -1}, {1, 1, -1}, {-1, 1, -1},
             {-1, -1,  1}, {1, -1,  1}, {1, 1,  1}, {-1, 1,  1}
         };
-        memcpy(obj.vertices, v, sizeof(v));
+        for (int i = 0; i < 8; i++) obj.vertices[i] = v[i];
 
         obj.num_triangles = 12;
-        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * 12);
+        obj.triangles = (Triangle3D*)AppAlloc(sizeof(Triangle3D) * 12);
         Triangle3D t[12] = {
             {0, 1, 2, obj.color}, {0, 2, 3, obj.color},
             {5, 4, 7, obj.color}, {5, 7, 6, obj.color},
@@ -411,13 +414,13 @@ void Add3DPrimitive(ToolType tool) {
             {4, 0, 3, obj.color}, {4, 3, 7, obj.color},
             {1, 5, 6, obj.color}, {1, 6, 2, obj.color}
         };
-        memcpy(obj.triangles, t, sizeof(t));
+        for (int i = 0; i < 12; i++) obj.triangles[i] = t[i];
     } else if (tool == TOOL_3D_SPHERE) {
-        strcpy(obj.name, "3D Sphere");
+        AppStrCpy(obj.name, "3D Sphere");
         int latBands = 12;
         int longBands = 12;
         obj.num_vertices = (latBands + 1) * (longBands + 1);
-        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
+        obj.vertices = (Vec3*)AppAlloc(sizeof(Vec3) * obj.num_vertices);
 
         int vIdx = 0;
         for (int lat = 0; lat <= latBands; lat++) {
@@ -435,7 +438,7 @@ void Add3DPrimitive(ToolType tool) {
         }
 
         obj.num_triangles = latBands * longBands * 2;
-        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * obj.num_triangles);
+        obj.triangles = (Triangle3D*)AppAlloc(sizeof(Triangle3D) * obj.num_triangles);
         int tIdx = 0;
         for (int lat = 0; lat < latBands; lat++) {
             for (int lon = 0; lon < longBands; lon++) {
@@ -446,10 +449,10 @@ void Add3DPrimitive(ToolType tool) {
             }
         }
     } else if (tool == TOOL_3D_CYLINDER) {
-        strcpy(obj.name, "3D Cylinder");
+        AppStrCpy(obj.name, "3D Cylinder");
         int segments = 16;
         obj.num_vertices = segments * 2 + 2;
-        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
+        obj.vertices = (Vec3*)AppAlloc(sizeof(Vec3) * obj.num_vertices);
 
         int topCenter = segments * 2;
         int bottomCenter = segments * 2 + 1;
@@ -463,7 +466,7 @@ void Add3DPrimitive(ToolType tool) {
         }
 
         obj.num_triangles = segments * 4;
-        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * obj.num_triangles);
+        obj.triangles = (Triangle3D*)AppAlloc(sizeof(Triangle3D) * obj.num_triangles);
         int tIdx = 0;
         for (int i = 0; i < segments; i++) {
             int next = (i + 1) % segments;
@@ -473,10 +476,10 @@ void Add3DPrimitive(ToolType tool) {
             obj.triangles[tIdx++] = (Triangle3D){bottomCenter, next + segments, i + segments, obj.color};
         }
     } else if (tool == TOOL_3D_CONE) {
-        strcpy(obj.name, "3D Cone");
+        AppStrCpy(obj.name, "3D Cone");
         int segments = 16;
         obj.num_vertices = segments + 2;
-        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
+        obj.vertices = (Vec3*)AppAlloc(sizeof(Vec3) * obj.num_vertices);
 
         int apex = segments;
         int bottomCenter = segments + 1;
@@ -489,7 +492,7 @@ void Add3DPrimitive(ToolType tool) {
         }
 
         obj.num_triangles = segments * 2;
-        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * obj.num_triangles);
+        obj.triangles = (Triangle3D*)AppAlloc(sizeof(Triangle3D) * obj.num_triangles);
         int tIdx = 0;
         for (int i = 0; i < segments; i++) {
             int next = (i + 1) % segments;
@@ -497,14 +500,14 @@ void Add3DPrimitive(ToolType tool) {
             obj.triangles[tIdx++] = (Triangle3D){bottomCenter, i, next, obj.color};
         }
     } else if (tool == TOOL_3D_TORUS) {
-        strcpy(obj.name, "3D Torus");
+        AppStrCpy(obj.name, "3D Torus");
         int R_segments = 12;
         int r_segments = 8;
         double R = 0.8;
         double r = 0.3;
 
         obj.num_vertices = R_segments * r_segments;
-        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
+        obj.vertices = (Vec3*)AppAlloc(sizeof(Vec3) * obj.num_vertices);
 
         int vIdx = 0;
         for (int i = 0; i < R_segments; i++) {
@@ -519,7 +522,7 @@ void Add3DPrimitive(ToolType tool) {
         }
 
         obj.num_triangles = R_segments * r_segments * 2;
-        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * obj.num_triangles);
+        obj.triangles = (Triangle3D*)AppAlloc(sizeof(Triangle3D) * obj.num_triangles);
         int tIdx = 0;
         for (int i = 0; i < R_segments; i++) {
             int next_i = (i + 1) % R_segments;
@@ -536,7 +539,7 @@ void Add3DPrimitive(ToolType tool) {
         }
     }
 
-    g_App.objects3D = (Object3D*)realloc(g_App.objects3D, sizeof(Object3D) * (g_App.numObjects3D + 1));
+    g_App.objects3D = (Object3D*)AppRealloc(g_App.objects3D, sizeof(Object3D) * (g_App.numObjects3D + 1));
     for (int i = 0; i < g_App.numObjects3D; i++) g_App.objects3D[i].selected = FALSE;
 
     g_App.objects3D[g_App.numObjects3D] = obj;
@@ -558,8 +561,8 @@ void Render3DObjects(HDC hdc) {
     for (int o = 0; o < g_App.numObjects3D; o++) {
         Object3D *obj = &g_App.objects3D[o];
 
-        Vec3 *transVerts = (Vec3*)malloc(sizeof(Vec3) * obj->num_vertices);
-        POINT *projVerts = (POINT*)malloc(sizeof(POINT) * obj->num_vertices);
+        Vec3 *transVerts = (Vec3*)AppAlloc(sizeof(Vec3) * obj->num_vertices);
+        POINT *projVerts = (POINT*)AppAlloc(sizeof(POINT) * obj->num_vertices);
 
         for (int v = 0; v < obj->num_vertices; v++) {
             Vec3 vert = {
@@ -638,21 +641,23 @@ void Render3DObjects(HDC hdc) {
             DeleteObject(hGizmoPen);
         }
 
-        free(transVerts);
-        free(projVerts);
+        AppFree(transVerts);
+        AppFree(projVerts);
     }
 }
 
 void ExportToOBJ(const char *filename) {
-    FILE *fp = fopen(filename, "w");
-    if (!fp) return;
+    HANDLE hFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile == INVALID_HANDLE_VALUE) return;
 
-    fprintf(fp, "# Paint 3D Exported Wavefront OBJ\n");
+    DWORD written;
+    const char *header = "# Paint 3D Exported Wavefront OBJ\r\n";
+    WriteFile(hFile, header, AppStrLen(header), &written, NULL);
+
     int vertOffset = 1;
 
     for (int o = 0; o < g_App.numObjects3D; o++) {
         Object3D *obj = &g_App.objects3D[o];
-        fprintf(fp, "o %s_%d\n", obj->name, o);
 
         for (int v = 0; v < obj->num_vertices; v++) {
             Vec3 vert = {
@@ -662,21 +667,26 @@ void ExportToOBJ(const char *filename) {
             };
             vert = RotateVec3(vert, obj->rot);
             vert = Vec3_Add(vert, obj->pos);
-            fprintf(fp, "v %.4f %.4f %.4f\n", vert.x, vert.y, vert.z);
+
+            char buf[128];
+            wsprintfA(buf, "v %d %d %d\r\n", (int)vert.x, (int)vert.y, (int)vert.z);
+            WriteFile(hFile, buf, AppStrLen(buf), &written, NULL);
         }
 
         for (int t = 0; t < obj->num_triangles; t++) {
             Triangle3D *tri = &obj->triangles[t];
-            fprintf(fp, "f %d %d %d\n",
-                    tri->v1 + vertOffset,
-                    tri->v2 + vertOffset,
-                    tri->v3 + vertOffset);
+            char buf[128];
+            wsprintfA(buf, "f %d %d %d\r\n",
+                      tri->v1 + vertOffset,
+                      tri->v2 + vertOffset,
+                      tri->v3 + vertOffset);
+            WriteFile(hFile, buf, AppStrLen(buf), &written, NULL);
         }
 
         vertOffset += obj->num_vertices;
     }
 
-    fclose(fp);
+    CloseHandle(hFile);
     MessageBoxA(g_App.hwndMain, "Successfully exported 3D model to Wavefront .OBJ!", "Paint 3D Export", MB_OK | MB_ICONINFORMATION);
 }
 
@@ -696,16 +706,17 @@ void ExportToPNG(const char *filename) {
     bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bfh.bfSize = bfh.bfOffBits + bih.biSizeImage;
 
-    FILE *fp = fopen(filename, "wb");
-    if (fp) {
-        fwrite(&bfh, sizeof(bfh), 1, fp);
-        fwrite(&bih, sizeof(bih), 1, fp);
+    HANDLE hFile = CreateFileA(filename, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (hFile != INVALID_HANDLE_VALUE) {
+        DWORD written;
+        WriteFile(hFile, &bfh, sizeof(bfh), &written, NULL);
+        WriteFile(hFile, &bih, sizeof(bih), &written, NULL);
 
         BYTE *pixels = (BYTE*)g_App.pixelBuffer;
         for (int y = g_App.canvasHeight - 1; y >= 0; y--) {
-            fwrite(pixels + (y * g_App.canvasWidth * 4), g_App.canvasWidth * 4, 1, fp);
+            WriteFile(hFile, pixels + (y * g_App.canvasWidth * 4), g_App.canvasWidth * 4, &written, NULL);
         }
-        fclose(fp);
+        CloseHandle(hFile);
         MessageBoxA(g_App.hwndMain, "Successfully saved 2D Image Canvas!", "Paint 3D Save", MB_OK | MB_ICONINFORMATION);
     }
 }
@@ -720,15 +731,12 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             HBITMAP hbmMem = CreateCompatibleBitmap(hdc, g_App.canvasWidth, g_App.canvasHeight);
             HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hbmMem);
 
-            // Copy 2D canvas buffer
             BitBlt(hdcMem, 0, 0, g_App.canvasWidth, g_App.canvasHeight, g_App.hdcCanvas, 0, 0, SRCCOPY);
 
-            // Render interactive preview for 2D Shapes or Stickers
             if (g_App.isDrawing && (g_App.currentTab == TAB_2D_SHAPES || g_App.currentTab == TAB_STICKERS)) {
                 Draw2DShape(hdcMem, g_App.startMousePos.x, g_App.startMousePos.y, g_App.lastMousePos.x, g_App.lastMousePos.y);
             }
 
-            // Render 3D objects on top
             Render3DObjects(hdcMem);
 
             BitBlt(hdc, 0, 0, g_App.canvasWidth, g_App.canvasHeight, hdcMem, 0, 0, SRCCOPY);
@@ -915,7 +923,6 @@ void BuildSidebarControls() {
         y += 55;
     }
 
-    // Color Palette Section
     y = 350;
     CreateWindowA("STATIC", "COLOR PALETTE", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, y, 220, 20, g_App.hwndSidebar, NULL, NULL, NULL);
     y += 25;
@@ -931,7 +938,6 @@ void BuildSidebarControls() {
                   15, y, 210, 30, g_App.hwndSidebar, (HMENU)ID_BTN_ADD_COLOR, NULL, NULL);
 }
 
-// Main Window Procedure
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
@@ -950,7 +956,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
             g_App.hwndCanvas = CreateWindowA("Paint3DCanvasClass", "", WS_CHILD | WS_VISIBLE | WS_BORDER,
                                             10, 55, 750, 580, hwnd, NULL, NULL, NULL);
 
-            // Container panel for sidebar controls
             g_App.hwndSidebar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                              770, 55, 240, 580, hwnd, NULL, NULL, NULL);
 
@@ -1113,7 +1118,10 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+// Clean Win32 Application Entry Point (no C CRT overhead or template signatures)
+void Paint3DEntry(void) {
+    HINSTANCE hInstance = GetModuleHandle(NULL);
+
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
     icex.dwICC = ICC_WIN95_CLASSES | ICC_BAR_CLASSES;
@@ -1135,7 +1143,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         RGB(63, 72, 204),    RGB(163, 73, 164),   RGB(255, 174, 201),  RGB(185, 122, 87)
     };
     g_App.paletteCount = 12;
-    memcpy(g_App.palette, defaultPalette, sizeof(defaultPalette));
+    for (int i = 0; i < 12; i++) g_App.palette[i] = defaultPalette[i];
 
     WNDCLASSEXA wcxCanvas = {0};
     wcxCanvas.cbSize = sizeof(WNDCLASSEXA);
@@ -1164,9 +1172,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     g_App.hwndMain = hwndMain;
 
-    if (!hwndMain) return 0;
+    if (!hwndMain) ExitProcess(1);
 
-    ShowWindow(hwndMain, nCmdShow);
+    ShowWindow(hwndMain, SW_SHOW);
     UpdateWindow(hwndMain);
 
     MSG msg;
@@ -1175,5 +1183,5 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         DispatchMessage(&msg);
     }
 
-    return (int)msg.wParam;
+    ExitProcess((UINT)msg.wParam);
 }
