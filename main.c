@@ -33,6 +33,9 @@ typedef enum {
     TOOL_3D_CYLINDER,
     TOOL_3D_CONE,
     TOOL_3D_TORUS,
+    TOOL_3D_PYRAMID,
+    TOOL_3D_PRISM,
+    TOOL_3D_CAPSULE,
     // Stickers
     TOOL_STICKER_SMILEY,
     TOOL_STICKER_HEART,
@@ -108,8 +111,9 @@ typedef struct {
     int numObjects3D;
     int selectedObjectIndex;
 
-    // Lighting
+    // Lighting & Render Settings
     Vec3 lightDir;
+    BOOL wireframeMode;
 
     // Effects / Themes
     int activeEffect;
@@ -534,6 +538,69 @@ void Add3DPrimitive(ToolType tool) {
                 obj.triangles[tIdx++] = (Triangle3D){idx10, idx11, idx01, obj.color};
             }
         }
+    } else if (tool == TOOL_3D_PYRAMID) {
+        strcpy(obj.name, "3D Pyramid");
+        obj.num_vertices = 5;
+        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * 5);
+        Vec3 v[5] = {
+            {-1, -1, -1}, {1, -1, -1}, {1, -1, 1}, {-1, -1, 1}, {0, 1, 0}
+        };
+        memcpy(obj.vertices, v, sizeof(v));
+
+        obj.num_triangles = 6;
+        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * 6);
+        Triangle3D t[6] = {
+            {0, 2, 1, obj.color}, {0, 3, 2, obj.color},
+            {0, 1, 4, obj.color}, {1, 2, 4, obj.color},
+            {2, 3, 4, obj.color}, {3, 0, 4, obj.color}
+        };
+        memcpy(obj.triangles, t, sizeof(t));
+    } else if (tool == TOOL_3D_PRISM) {
+        strcpy(obj.name, "3D Triangular Prism");
+        obj.num_vertices = 6;
+        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * 6);
+        Vec3 v[6] = {
+            {-1, -1, -1}, {1, -1, -1}, {0, 1, -1},
+            {-1, -1,  1}, {1, -1,  1}, {0, 1,  1}
+        };
+        memcpy(obj.vertices, v, sizeof(v));
+
+        obj.num_triangles = 8;
+        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * 8);
+        Triangle3D t[8] = {
+            {0, 1, 2, obj.color}, {3, 5, 4, obj.color},
+            {0, 3, 4, obj.color}, {0, 4, 1, obj.color},
+            {1, 4, 5, obj.color}, {1, 5, 2, obj.color},
+            {2, 5, 3, obj.color}, {2, 3, 0, obj.color}
+        };
+        memcpy(obj.triangles, t, sizeof(t));
+    } else if (tool == TOOL_3D_CAPSULE) {
+        strcpy(obj.name, "3D Capsule");
+        int segments = 12;
+        obj.num_vertices = segments * 2 + 2;
+        obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
+
+        int topApex = segments * 2;
+        int bottomApex = segments * 2 + 1;
+        obj.vertices[topApex] = (Vec3){0, 1.5, 0};
+        obj.vertices[bottomApex] = (Vec3){0, -1.5, 0};
+
+        for (int i = 0; i < segments; i++) {
+            double angle = i * 2 * M_PI / segments;
+            obj.vertices[i] = (Vec3){0.8 * cos(angle), 0.8, 0.8 * sin(angle)};
+            obj.vertices[i + segments] = (Vec3){0.8 * cos(angle), -0.8, 0.8 * sin(angle)};
+        }
+
+        obj.num_triangles = segments * 4;
+        obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * obj.num_triangles);
+        int tIdx = 0;
+        for (int i = 0; i < segments; i++) {
+            int next = (i + 1) % segments;
+            obj.triangles[tIdx++] = (Triangle3D){topApex, next, i, obj.color};
+            obj.triangles[tIdx++] = (Triangle3D){i, next, i + segments, obj.color};
+            obj.triangles[tIdx++] = (Triangle3D){next, next + segments, i + segments, obj.color};
+            obj.triangles[tIdx++] = (Triangle3D){bottomApex, i + segments, next + segments, obj.color};
+        }
     }
 
     g_App.objects3D = (Object3D*)realloc(g_App.objects3D, sizeof(Object3D) * (g_App.numObjects3D + 1));
@@ -857,15 +924,15 @@ void BuildSidebarControls() {
         CreateWindowA("STATIC", "3D OBJECTS", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, y, 220, 20, g_App.hwndSidebar, NULL, NULL, NULL);
         y += 30;
 
-        const char *shapes3D[] = {"3D Cube", "3D Sphere", "3D Cylinder", "3D Cone", "3D Torus"};
-        ToolType types3D[] = {TOOL_3D_CUBE, TOOL_3D_SPHERE, TOOL_3D_CYLINDER, TOOL_3D_CONE, TOOL_3D_TORUS};
+        const char *shapes3D[] = {"3D Cube", "3D Sphere", "3D Cylinder", "3D Cone", "3D Torus", "3D Pyramid", "3D Prism", "3D Capsule"};
+        ToolType types3D[] = {TOOL_3D_CUBE, TOOL_3D_SPHERE, TOOL_3D_CYLINDER, TOOL_3D_CONE, TOOL_3D_TORUS, TOOL_3D_PYRAMID, TOOL_3D_PRISM, TOOL_3D_CAPSULE};
 
-        for (int i = 0; i < 5; i++) {
+        for (int i = 0; i < 8; i++) {
             CreateWindowA("BUTTON", shapes3D[i], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                           15 + (i % 2) * 110, y + (i / 2) * 40, 100, 35,
                           g_App.hwndSidebar, (HMENU)(UINT_PTR)(ID_TOOL_START + types3D[i]), NULL, NULL);
         }
-        y += 3 * 40 + 20;
+        y += 4 * 40 + 20;
 
         CreateWindowA("STATIC", "Tip: Drag mouse on canvas to rotate selected 3D object (Ctrl+Drag for Z-rotation)",
                       WS_CHILD | WS_VISIBLE | SS_LEFT, 15, y, 210, 60, g_App.hwndSidebar, NULL, NULL, NULL);

@@ -90,8 +90,8 @@ def create_paint3d_icon(size):
     img = img.resize((size, size), Image.Resampling.LANCZOS)
     return img
 
-# Create multi-size icon sizes: 256, 128, 64, 48, 32, 16
-sizes = [256, 128, 64, 48, 32, 16]
+# Create multi-size icon sizes: 256, 128, 96, 64, 48, 32, 24, 16
+sizes = [256, 128, 96, 64, 48, 32, 24, 16]
 images = [create_paint3d_icon(s) for s in sizes]
 
 # Save primary PNG and ICO
