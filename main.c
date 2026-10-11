@@ -48,7 +48,8 @@ typedef enum {
     TAB_STICKERS,
     TAB_TEXT,
     TAB_EFFECTS,
-    TAB_CANVAS
+    TAB_CANVAS,
+    TAB_3D_LIBRARY
 } TabCategory;
 
 // 3D Point & Vector structures
@@ -70,7 +71,7 @@ typedef struct {
     Vec3 rot; // euler angles in degrees
     Vec3 scale;
     COLORREF color;
-    char name[32];
+    char name[64];
     BOOL selected;
 } Object3D;
 
@@ -88,6 +89,7 @@ typedef struct {
     // Brush Properties
     COLORREF primaryColor;
     int brushThickness;
+    int brushOpacity; // 1-100
 
     // Canvas dimensions
     int canvasWidth;
@@ -127,6 +129,9 @@ typedef struct {
     COLORREF palette[20];
     int paletteCount;
     COLORREF customColors[16];
+
+    // Welcome Screen Visibility
+    BOOL showWelcomeScreen;
 } AppState;
 
 static AppState g_App;
@@ -139,15 +144,24 @@ static AppState g_App;
 #define ID_TAB_TEXT       105
 #define ID_TAB_EFFECTS    106
 #define ID_TAB_CANVAS     107
+#define ID_TAB_3D_LIB     108
 
 #define ID_TOOL_START     200
 #define ID_COLOR_START    300
 #define ID_BTN_ADD_COLOR  399
 #define ID_SLIDER_THICK   401
+#define ID_SLIDER_OPACITY 402
+
 #define ID_BTN_UNDO       501
 #define ID_BTN_CLEAR      502
 #define ID_BTN_SAVE_2D    503
 #define ID_BTN_EXPORT_3D  504
+#define ID_BTN_IMPORT_3D  505
+
+#define ID_WELCOME_NEW    510
+#define ID_WELCOME_OPEN   511
+#define ID_WELCOME_PASTE  512
+
 #define ID_EFFECT_START   600
 #define ID_EDIT_TEXT      701
 
@@ -161,6 +175,7 @@ void Draw2DShape(HDC hdcTarget, int x1, int y1, int x2, int y2);
 void Add3DPrimitive(ToolType tool);
 void Render3DObjects(HDC hdc);
 void ExportToOBJ(const char *filename);
+BOOL ImportOBJ(const char *filename);
 void ExportToPNG(const char *filename);
 void BuildSidebarControls();
 
@@ -269,10 +284,33 @@ void DrawBrushStroke(HDC hdcTarget, int x1, int y1, int x2, int y2) {
         col = g_App.canvasBgColor;
     }
 
-    int radius = g_App.brushThickness / 2;
+    int sz = g_App.brushThickness;
+    if (sz < 1) sz = 1;
+
+    if (g_App.currentTool == TOOL_PIXEL_PEN) {
+        // Pixel Pen: Draw sharp pixelated blocks
+        int dx = abs(x2 - x1);
+        int dy = abs(y2 - y1);
+        int steps = dx > dy ? dx : dy;
+        if (steps == 0) steps = 1;
+
+        HBRUSH hBrush = CreateSolidBrush(col);
+        for (int i = 0; i <= steps; i++) {
+            int px = x1 + (x2 - x1) * i / steps;
+            int py = y1 + (y2 - y1) * i / steps;
+            int snapX = (px / sz) * sz;
+            int snapY = (py / sz) * sz;
+            RECT rc = {snapX, snapY, snapX + sz, snapY + sz};
+            FillRect(hdcTarget, &rc, hBrush);
+        }
+        DeleteObject(hBrush);
+        return;
+    }
+
+    int radius = sz / 2;
     if (radius < 1) radius = 1;
 
-    HPEN hPen = CreatePen(PS_SOLID, g_App.brushThickness, col);
+    HPEN hPen = CreatePen(PS_SOLID, sz, col);
     HBRUSH hBrush = CreateSolidBrush(col);
     HPEN hOldPen = (HPEN)SelectObject(hdcTarget, hPen);
     HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcTarget, hBrush);
@@ -546,6 +584,104 @@ void Add3DPrimitive(ToolType tool) {
     InvalidateRect(g_App.hwndCanvas, NULL, FALSE);
 }
 
+BOOL ImportOBJ(const char *filename) {
+    FILE *fp = fopen(filename, "r");
+    if (!fp) {
+        MessageBoxA(g_App.hwndMain, "Failed to open 3D model file.", "Import Error", MB_OK | MB_ICONERROR);
+        return FALSE;
+    }
+
+    Vec3 *verts = NULL;
+    int numVerts = 0;
+    Triangle3D *tris = NULL;
+    int numTris = 0;
+
+    char line[256];
+    while (fgets(line, sizeof(line), fp)) {
+        if (line[0] == 'v' && line[1] == ' ') {
+            Vec3 v;
+            if (sscanf(line + 2, "%lf %lf %lf", &v.x, &v.y, &v.z) == 3) {
+                verts = (Vec3*)realloc(verts, sizeof(Vec3) * (numVerts + 1));
+                verts[numVerts++] = v;
+            }
+        } else if (line[0] == 'f' && line[1] == ' ') {
+            int v1, v2, v3;
+            // Parse f v1/vt/vn or f v1 v2 v3
+            int matches = sscanf(line + 2, "%d/%*d/%*d %d/%*d/%*d %d/%*d/%*d", &v1, &v2, &v3);
+            if (matches < 3) {
+                matches = sscanf(line + 2, "%d//%*d %d//%*d %d//%*d", &v1, &v2, &v3);
+            }
+            if (matches < 3) {
+                matches = sscanf(line + 2, "%d %d %d", &v1, &v2, &v3);
+            }
+
+            if (matches == 3) {
+                v1 = (v1 > 0) ? v1 - 1 : numVerts + v1;
+                v2 = (v2 > 0) ? v2 - 1 : numVerts + v2;
+                v3 = (v3 > 0) ? v3 - 1 : numVerts + v3;
+
+                if (v1 >= 0 && v1 < numVerts && v2 >= 0 && v2 < numVerts && v3 >= 0 && v3 < numVerts) {
+                    tris = (Triangle3D*)realloc(tris, sizeof(Triangle3D) * (numTris + 1));
+                    tris[numTris++] = (Triangle3D){v1, v2, v3, g_App.primaryColor};
+                }
+            }
+        }
+    }
+    fclose(fp);
+
+    if (numVerts == 0 || numTris == 0) {
+        free(verts);
+        free(tris);
+        MessageBoxA(g_App.hwndMain, "Invalid or unsupported OBJ format.", "Import Error", MB_OK | MB_ICONWARNING);
+        return FALSE;
+    }
+
+    // Normalize model scale & position
+    Vec3 minV = verts[0], maxV = verts[0];
+    for (int i = 1; i < numVerts; i++) {
+        if (verts[i].x < minV.x) minV.x = verts[i].x;
+        if (verts[i].y < minV.y) minV.y = verts[i].y;
+        if (verts[i].z < minV.z) minV.z = verts[i].z;
+        if (verts[i].x > maxV.x) maxV.x = verts[i].x;
+        if (verts[i].y > maxV.y) maxV.y = verts[i].y;
+        if (verts[i].z > maxV.z) maxV.z = verts[i].z;
+    }
+    double maxExtent = maxV.x - minV.x;
+    if (maxV.y - minV.y > maxExtent) maxExtent = maxV.y - minV.y;
+    if (maxV.z - minV.z > maxExtent) maxExtent = maxV.z - minV.z;
+    if (maxExtent < 1e-4) maxExtent = 1.0;
+
+    Vec3 center = {(minV.x + maxV.x)/2.0, (minV.y + maxV.y)/2.0, (minV.z + maxV.z)/2.0};
+    for (int i = 0; i < numVerts; i++) {
+        verts[i].x = (verts[i].x - center.x) / (maxExtent / 2.0);
+        verts[i].y = (verts[i].y - center.y) / (maxExtent / 2.0);
+        verts[i].z = (verts[i].z - center.z) / (maxExtent / 2.0);
+    }
+
+    Object3D obj = {0};
+    strcpy(obj.name, "Imported Model");
+    obj.pos = (Vec3){0.0, 0.0, 0.0};
+    obj.rot = (Vec3){15.0, 30.0, 0.0};
+    obj.scale = (Vec3){120.0, 120.0, 120.0};
+    obj.color = g_App.primaryColor;
+    obj.selected = TRUE;
+    obj.vertices = verts;
+    obj.num_vertices = numVerts;
+    obj.triangles = tris;
+    obj.num_triangles = numTris;
+
+    g_App.objects3D = (Object3D*)realloc(g_App.objects3D, sizeof(Object3D) * (g_App.numObjects3D + 1));
+    for (int i = 0; i < g_App.numObjects3D; i++) g_App.objects3D[i].selected = FALSE;
+
+    g_App.objects3D[g_App.numObjects3D] = obj;
+    g_App.selectedObjectIndex = g_App.numObjects3D;
+    g_App.numObjects3D++;
+
+    InvalidateRect(g_App.hwndCanvas, NULL, FALSE);
+    MessageBoxA(g_App.hwndMain, "3D Model imported successfully!", "Paint 3D", MB_OK | MB_ICONINFORMATION);
+    return TRUE;
+}
+
 void Render3DObjects(HDC hdc) {
     if (g_App.numObjects3D == 0) return;
 
@@ -710,6 +846,41 @@ void ExportToPNG(const char *filename) {
     }
 }
 
+void DrawWelcomeOverlay(HDC hdc, RECT *rcClient) {
+    if (!g_App.showWelcomeScreen) return;
+
+    // Dark transparent backdrop
+    HBRUSH hBg = CreateSolidBrush(RGB(60, 60, 65));
+    FillRect(hdc, rcClient, hBg);
+    DeleteObject(hBg);
+
+    // Center Card
+    int cardW = 500;
+    int cardH = 380;
+    int cardX = (rcClient->right - rcClient->left - cardW) / 2;
+    int cardY = (rcClient->bottom - rcClient->top - cardH) / 2;
+
+    RECT rcCard = {cardX, cardY, cardX + cardW, cardY + cardH};
+    HBRUSH hCardBg = CreateSolidBrush(RGB(240, 240, 243));
+    FillRect(hdc, &rcCard, hCardBg);
+    DeleteObject(hCardBg);
+
+    // Title text
+    HFONT hFontTitle = CreateFontA(32, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    HFONT hOldFont = (HFONT)SelectObject(hdc, hFontTitle);
+    SetTextColor(hdc, RGB(20, 20, 20));
+    SetBkMode(hdc, TRANSPARENT);
+    TextOutA(hdc, cardX + 30, cardY + 25, "Welcome", 7);
+
+    HFONT hFontSub = CreateFontA(14, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH, "Segoe UI");
+    SelectObject(hdc, hFontSub);
+    TextOutA(hdc, cardX + 30, cardY + 330, "Paint 3D for Windows - Ready to create", 38);
+
+    SelectObject(hdc, hOldFont);
+    DeleteObject(hFontTitle);
+    DeleteObject(hFontSub);
+}
+
 LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_PAINT: {
@@ -728,7 +899,14 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 
             Render3DObjects(hdcMem);
 
+            RECT rcClient;
+            GetClientRect(hwnd, &rcClient);
+
             BitBlt(hdc, 0, 0, g_App.canvasWidth, g_App.canvasHeight, hdcMem, 0, 0, SRCCOPY);
+
+            if (g_App.showWelcomeScreen) {
+                DrawWelcomeOverlay(hdc, &rcClient);
+            }
 
             SelectObject(hdcMem, hOldBm);
             DeleteObject(hbmMem);
@@ -738,6 +916,12 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
         case WM_LBUTTONDOWN: {
+            if (g_App.showWelcomeScreen) {
+                g_App.showWelcomeScreen = FALSE;
+                InvalidateRect(hwnd, NULL, TRUE);
+                return 0;
+            }
+
             SetCapture(hwnd);
             g_App.isDrawing = TRUE;
             g_App.startMousePos.x = LOWORD(lParam);
@@ -761,14 +945,14 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
             return 0;
         }
         case WM_MOUSEMOVE: {
-            if (g_App.isDrawing) {
+            if (g_App.isDrawing && !g_App.showWelcomeScreen) {
                 int x = LOWORD(lParam);
                 int y = HIWORD(lParam);
 
                 if (g_App.currentTab == TAB_BRUSHES && g_App.currentTool != TOOL_FILL) {
                     DrawBrushStroke(g_App.hdcCanvas, g_App.lastMousePos.x, g_App.lastMousePos.y, x, y);
                     InvalidateRect(hwnd, NULL, FALSE);
-                } else if (g_App.currentTab == TAB_3D_SHAPES && g_App.numObjects3D > 0 && g_App.selectedObjectIndex >= 0) {
+                } else if ((g_App.currentTab == TAB_3D_SHAPES || g_App.currentTab == TAB_3D_LIBRARY) && g_App.numObjects3D > 0 && g_App.selectedObjectIndex >= 0) {
                     int dx = x - g_App.lastMousePos.x;
                     int dy = y - g_App.lastMousePos.y;
                     Object3D *obj = &g_App.objects3D[g_App.selectedObjectIndex];
@@ -814,7 +998,7 @@ void BuildSidebarControls() {
     while (hChild) {
         HWND hNext = GetWindow(hChild, GW_HWNDNEXT);
         int id = GetDlgCtrlID(hChild);
-        if (id >= ID_TOOL_START || id == ID_SLIDER_THICK || id == ID_BTN_ADD_COLOR || id == ID_EDIT_TEXT) {
+        if (id >= ID_TOOL_START || id == ID_SLIDER_THICK || id == ID_SLIDER_OPACITY || id == ID_BTN_ADD_COLOR || id == ID_EDIT_TEXT || id == ID_BTN_IMPORT_3D) {
             DestroyWindow(hChild);
         }
         hChild = hNext;
@@ -835,14 +1019,21 @@ void BuildSidebarControls() {
                           baseX + 15 + (i % 2) * 110, y + (i / 2) * 35, 100, 30,
                           g_App.hwndMain, (HMENU)(UINT_PTR)(ID_TOOL_START + toolTypes[i]), NULL, NULL);
         }
-        y += 5 * 35 + 20;
+        y += 5 * 35 + 15;
 
-        CreateWindowA("STATIC", "Thickness:", WS_CHILD | WS_VISIBLE, baseX + 15, y, 100, 20, g_App.hwndMain, NULL, NULL, NULL);
+        CreateWindowA("STATIC", "Thickness:", WS_CHILD | WS_VISIBLE, baseX + 15, y, 100, 18, g_App.hwndMain, NULL, NULL, NULL);
         HWND hSlideThick = CreateWindowA(TRACKBAR_CLASS, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
-                                         baseX + 15, y + 20, 210, 30, g_App.hwndMain, (HMENU)ID_SLIDER_THICK, NULL, NULL);
+                                         baseX + 15, y + 18, 210, 25, g_App.hwndMain, (HMENU)ID_SLIDER_THICK, NULL, NULL);
         SendMessage(hSlideThick, TBM_SETRANGE, TRUE, MAKELONG(1, 100));
         SendMessage(hSlideThick, TBM_SETPOS, TRUE, g_App.brushThickness);
-        y += 60;
+        y += 48;
+
+        CreateWindowA("STATIC", "Opacity:", WS_CHILD | WS_VISIBLE, baseX + 15, y, 100, 18, g_App.hwndMain, NULL, NULL, NULL);
+        HWND hSlideOpac = CreateWindowA(TRACKBAR_CLASS, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
+                                        baseX + 15, y + 18, 210, 25, g_App.hwndMain, (HMENU)ID_SLIDER_OPACITY, NULL, NULL);
+        SendMessage(hSlideOpac, TBM_SETRANGE, TRUE, MAKELONG(1, 100));
+        SendMessage(hSlideOpac, TBM_SETPOS, TRUE, g_App.brushOpacity);
+        y += 50;
 
     } else if (g_App.currentTab == TAB_2D_SHAPES) {
         CreateWindowA("STATIC", "2D SHAPES", WS_CHILD | WS_VISIBLE | SS_CENTER, baseX + 10, y, 220, 20, g_App.hwndMain, NULL, NULL, NULL);
@@ -875,6 +1066,22 @@ void BuildSidebarControls() {
         CreateWindowA("STATIC", "Tip: Drag mouse on canvas to rotate selected 3D object (Ctrl+Drag for Z-rotation)",
                       WS_CHILD | WS_VISIBLE | SS_LEFT, baseX + 15, y, 210, 60, g_App.hwndMain, NULL, NULL, NULL);
         y += 70;
+
+    } else if (g_App.currentTab == TAB_3D_LIBRARY) {
+        CreateWindowA("STATIC", "3D LIBRARY", WS_CHILD | WS_VISIBLE | SS_CENTER, baseX + 10, y, 220, 20, g_App.hwndMain, NULL, NULL, NULL);
+        y += 30;
+
+        CreateWindowA("BUTTON", "+ Open / Import .OBJ File", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                      baseX + 15, y, 210, 40, g_App.hwndMain, (HMENU)ID_BTN_IMPORT_3D, NULL, NULL);
+        y += 55;
+
+        CreateWindowA("STATIC", "Preset 3D Models:", WS_CHILD | WS_VISIBLE, baseX + 15, y, 200, 20, g_App.hwndMain, NULL, NULL, NULL);
+        y += 25;
+
+        CreateWindowA("BUTTON", "Space Capsule", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, baseX + 15, y, 210, 35, g_App.hwndMain, (HMENU)(UINT_PTR)(ID_TOOL_START + TOOL_3D_CONE), NULL, NULL);
+        y += 45;
+        CreateWindowA("BUTTON", "Donut / Torus", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, baseX + 15, y, 210, 35, g_App.hwndMain, (HMENU)(UINT_PTR)(ID_TOOL_START + TOOL_3D_TORUS), NULL, NULL);
+        y += 55;
 
     } else if (g_App.currentTab == TAB_STICKERS) {
         CreateWindowA("STATIC", "STICKERS", WS_CHILD | WS_VISIBLE | SS_CENTER, baseX + 10, y, 220, 20, g_App.hwndMain, NULL, NULL, NULL);
@@ -918,7 +1125,7 @@ void BuildSidebarControls() {
     }
 
     // Color Palette Section
-    y = 400;
+    y = 410;
     CreateWindowA("STATIC", "COLOR PALETTE", WS_CHILD | WS_VISIBLE | SS_CENTER, baseX + 10, y, 220, 20, g_App.hwndMain, NULL, NULL, NULL);
     y += 25;
 
@@ -929,7 +1136,7 @@ void BuildSidebarControls() {
     }
 
     y += ((g_App.paletteCount + 3) / 4) * 32 + 10;
-    CreateWindowA("BUTTON", "+ Add Custom Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+    CreateWindowA("BUTTON", "+ Add Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
                   baseX + 15, y, 210, 30, g_App.hwndMain, (HMENU)ID_BTN_ADD_COLOR, NULL, NULL);
 }
 
@@ -937,17 +1144,23 @@ void BuildSidebarControls() {
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            g_App.hwndToolbar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 0, 0, 1000, 45, hwnd, NULL, NULL, NULL);
+            g_App.hwndToolbar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 0, 0, 1030, 45, hwnd, NULL, NULL, NULL);
 
-            CreateWindowA("BUTTON", "Brushes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 8, 80, 30, hwnd, (HMENU)ID_TAB_BRUSHES, NULL, NULL);
-            CreateWindowA("BUTTON", "2D Shapes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 95, 8, 85, 30, hwnd, (HMENU)ID_TAB_2D, NULL, NULL);
-            CreateWindowA("BUTTON", "3D Shapes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 185, 8, 85, 30, hwnd, (HMENU)ID_TAB_3D, NULL, NULL);
-            CreateWindowA("BUTTON", "Stickers", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 275, 8, 80, 30, hwnd, (HMENU)ID_TAB_STICKERS, NULL, NULL);
-            CreateWindowA("BUTTON", "Text", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 360, 8, 70, 30, hwnd, (HMENU)ID_TAB_TEXT, NULL, NULL);
-            CreateWindowA("BUTTON", "Effects", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 435, 8, 75, 30, hwnd, (HMENU)ID_TAB_EFFECTS, NULL, NULL);
-            CreateWindowA("BUTTON", "Canvas", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 515, 8, 75, 30, hwnd, (HMENU)ID_TAB_CANVAS, NULL, NULL);
+            CreateWindowA("BUTTON", "Brushes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 8, 8, 75, 30, hwnd, (HMENU)ID_TAB_BRUSHES, NULL, NULL);
+            CreateWindowA("BUTTON", "2D shapes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 88, 8, 80, 30, hwnd, (HMENU)ID_TAB_2D, NULL, NULL);
+            CreateWindowA("BUTTON", "3D shapes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 173, 8, 80, 30, hwnd, (HMENU)ID_TAB_3D, NULL, NULL);
+            CreateWindowA("BUTTON", "Stickers", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 258, 8, 75, 30, hwnd, (HMENU)ID_TAB_STICKERS, NULL, NULL);
+            CreateWindowA("BUTTON", "Text", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 338, 8, 60, 30, hwnd, (HMENU)ID_TAB_TEXT, NULL, NULL);
+            CreateWindowA("BUTTON", "Effects", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 403, 8, 65, 30, hwnd, (HMENU)ID_TAB_EFFECTS, NULL, NULL);
+            CreateWindowA("BUTTON", "Canvas", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 473, 8, 65, 30, hwnd, (HMENU)ID_TAB_CANVAS, NULL, NULL);
+            CreateWindowA("BUTTON", "3D library", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 543, 8, 80, 30, hwnd, (HMENU)ID_TAB_3D_LIB, NULL, NULL);
 
-            CreateWindowA("BUTTON", "Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 65, 30, hwnd, (HMENU)ID_BTN_UNDO, NULL, NULL);
+            CreateWindowA("BUTTON", "Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 635, 8, 60, 30, hwnd, (HMENU)ID_BTN_UNDO, NULL, NULL);
+
+            // Welcome overlay buttons (shown over welcome screen)
+            CreateWindowA("BUTTON", "New", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 330, 180, 160, 70, hwnd, (HMENU)ID_WELCOME_NEW, NULL, NULL);
+            CreateWindowA("BUTTON", "Open", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 330, 260, 160, 70, hwnd, (HMENU)ID_WELCOME_OPEN, NULL, NULL);
+            CreateWindowA("BUTTON", "Paste", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 330, 340, 160, 70, hwnd, (HMENU)ID_WELCOME_PASTE, NULL, NULL);
 
             g_App.hwndCanvas = CreateWindowA("Paint3DCanvasClass", "", WS_CHILD | WS_VISIBLE | WS_BORDER,
                                             10, 55, 750, 580, hwnd, NULL, NULL, NULL);
@@ -989,12 +1202,39 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
 
+            if (wmId == ID_WELCOME_NEW || wmId == ID_WELCOME_OPEN || wmId == ID_WELCOME_PASTE) {
+                g_App.showWelcomeScreen = FALSE;
+                HWND hBtnNew = GetDlgItem(hwnd, ID_WELCOME_NEW);
+                HWND hBtnOpen = GetDlgItem(hwnd, ID_WELCOME_OPEN);
+                HWND hBtnPaste = GetDlgItem(hwnd, ID_WELCOME_PASTE);
+                if (hBtnNew) ShowWindow(hBtnNew, SW_HIDE);
+                if (hBtnOpen) ShowWindow(hBtnOpen, SW_HIDE);
+                if (hBtnPaste) ShowWindow(hBtnPaste, SW_HIDE);
+
+                if (wmId == ID_WELCOME_OPEN) {
+                    OPENFILENAMEA ofn = {0};
+                    char szFile[260] = "";
+                    ofn.lStructSize = sizeof(ofn);
+                    ofn.hwndOwner = hwnd;
+                    ofn.lpstrFile = szFile;
+                    ofn.nMaxFile = sizeof(szFile);
+                    ofn.lpstrFilter = "3D Models (*.obj)\0*.obj\0All Files (*.*)\0*.*\0";
+                    ofn.nFilterIndex = 1;
+                    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+                    if (GetOpenFileNameA(&ofn)) {
+                        ImportOBJ(szFile);
+                    }
+                }
+                InvalidateRect(g_App.hwndCanvas, NULL, TRUE);
+                return 0;
+            }
+
             if (HIWORD(wParam) == EN_CHANGE && wmId == ID_EDIT_TEXT) {
                 GetWindowTextA((HWND)lParam, g_App.textBuffer, sizeof(g_App.textBuffer));
                 return 0;
             }
 
-            if (wmId >= ID_TAB_BRUSHES && wmId <= ID_TAB_CANVAS) {
+            if (wmId >= ID_TAB_BRUSHES && wmId <= ID_TAB_3D_LIB) {
                 g_App.currentTab = (TabCategory)(wmId - ID_TAB_BRUSHES);
                 BuildSidebarControls();
                 InvalidateRect(hwnd, NULL, TRUE);
@@ -1035,6 +1275,22 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                     }
                     BuildSidebarControls();
                     InvalidateRect(hwnd, NULL, TRUE);
+                }
+                return 0;
+            }
+
+            if (wmId == ID_BTN_IMPORT_3D) {
+                OPENFILENAMEA ofn = {0};
+                char szFile[260] = "";
+                ofn.lStructSize = sizeof(ofn);
+                ofn.hwndOwner = hwnd;
+                ofn.lpstrFile = szFile;
+                ofn.nMaxFile = sizeof(szFile);
+                ofn.lpstrFilter = "3D Models (*.obj)\0*.obj\0All Files (*.*)\0*.*\0";
+                ofn.nFilterIndex = 1;
+                ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST;
+                if (GetOpenFileNameA(&ofn)) {
+                    ImportOBJ(szFile);
                 }
                 return 0;
             }
@@ -1097,8 +1353,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         case WM_HSCROLL: {
             HWND hSlider = (HWND)lParam;
-            if (hSlider && GetDlgCtrlID(hSlider) == ID_SLIDER_THICK) {
-                g_App.brushThickness = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+            if (hSlider) {
+                int id = GetDlgCtrlID(hSlider);
+                if (id == ID_SLIDER_THICK) {
+                    g_App.brushThickness = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+                } else if (id == ID_SLIDER_OPACITY) {
+                    g_App.brushOpacity = (int)SendMessage(hSlider, TBM_GETPOS, 0, 0);
+                }
             }
             return 0;
         }
@@ -1125,11 +1386,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_App.currentTool = TOOL_MARKER;
     g_App.primaryColor = RGB(0, 162, 232);
     g_App.brushThickness = 8;
+    g_App.brushOpacity = 100;
     g_App.fontSize = 28;
     g_App.canvasBgColor = RGB(255, 255, 255);
     g_App.lightDir = (Vec3){0.5, 1.0, -1.0};
     g_App.numObjects3D = 0;
     g_App.objects3D = NULL;
+    g_App.showWelcomeScreen = TRUE;
 
     COLORREF defaultPalette[] = {
         RGB(0, 0, 0),        RGB(128, 128, 128),  RGB(255, 255, 255),  RGB(237, 28, 36),
@@ -1159,7 +1422,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wcxMain.lpszClassName = "Paint3DMainClass";
     RegisterClassExA(&wcxMain);
 
-    HWND hwndMain = CreateWindowExA(0, "Paint3DMainClass", "Paint 3D",
+    HWND hwndMain = CreateWindowExA(0, "Paint3DMainClass", "Untitled - Paint 3D",
                                     WS_OVERLAPPEDWINDOW & ~WS_THICKFRAME & ~WS_MAXIMIZEBOX,
                                     CW_USEDEFAULT, CW_USEDEFAULT, 1030, 680,
                                     NULL, NULL, hInstance, NULL);
