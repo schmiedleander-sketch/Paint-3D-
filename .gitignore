@@ -1,0 +1,6 @@
+Paint3D.exe
+Paint3D.msi
+resource.o
+*.o
+*.exe
+*.msi
