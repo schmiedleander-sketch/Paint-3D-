@@ -33,15 +33,11 @@ typedef enum {
     TOOL_3D_CYLINDER,
     TOOL_3D_CONE,
     TOOL_3D_TORUS,
-    TOOL_3D_DOODLE,
     // Stickers
     TOOL_STICKER_SMILEY,
-    TOOL_STICKER_STAR,
     TOOL_STICKER_HEART,
     // Text
-    TOOL_TEXT,
-    // Select / Rotate 3D
-    TOOL_SELECT_3D
+    TOOL_TEXT
 } ToolType;
 
 // Tab Categories
@@ -61,19 +57,8 @@ typedef struct {
 } Vec3;
 
 typedef struct {
-    double x, y;
-} Vec2;
-
-typedef struct {
-    Vec3 pos;
-    Vec3 normal;
-    COLORREF color;
-} Vertex3D;
-
-typedef struct {
     int v1, v2, v3;
     COLORREF color;
-    Vec3 face_normal;
 } Triangle3D;
 
 typedef struct {
@@ -103,7 +88,6 @@ typedef struct {
     // Brush Properties
     COLORREF primaryColor;
     int brushThickness;
-    int brushOpacity; // 1 - 100
 
     // Canvas dimensions
     int canvasWidth;
@@ -115,7 +99,7 @@ typedef struct {
     HDC hdcCanvas;
     void *pixelBuffer;
 
-    // Undo / Redo
+    // Undo Stack
     HBITMAP hbmUndoStack[10];
     int undoCount;
 
@@ -128,39 +112,24 @@ typedef struct {
     Vec3 lightDir;
 
     // Effects / Themes
-    int activeEffect; // 0: Normal, 1: Warm, 2: Cool, 3: Cyberpunk, 4: Ink
+    int activeEffect;
 
     // Interactive mouse state
     BOOL isDrawing;
     POINT lastMousePos;
     POINT startMousePos;
 
-    // 3D Doodle path points
-    Vec2 doodlePoints[1000];
-    int numDoodlePoints;
-
     // Font for Text tool
     char textBuffer[256];
     int fontSize;
+
+    // Dynamic Color Palette
+    COLORREF palette[20];
+    int paletteCount;
+    COLORREF customColors[16];
 } AppState;
 
 static AppState g_App;
-
-// Preset Color Palette (Paint 3D palette)
-static COLORREF g_Palette[] = {
-    RGB(0, 0, 0),        // Black
-    RGB(128, 128, 128),  // Gray
-    RGB(255, 255, 255),  // White
-    RGB(237, 28, 36),    // Red
-    RGB(255, 127, 39),   // Orange
-    RGB(255, 201, 14),   // Yellow
-    RGB(34, 177, 76),    // Green
-    RGB(0, 162, 232),    // Light Blue
-    RGB(63, 72, 204),    // Dark Blue
-    RGB(163, 73, 164),   // Purple
-    RGB(255, 174, 201),  // Pink
-    RGB(185, 122, 87)    // Brown
-};
 
 // UI Control IDs
 #define ID_TAB_BRUSHES    101
@@ -173,33 +142,31 @@ static COLORREF g_Palette[] = {
 
 #define ID_TOOL_START     200
 #define ID_COLOR_START    300
+#define ID_BTN_ADD_COLOR  399
 #define ID_SLIDER_THICK   401
-#define ID_SLIDER_OPAC    402
 #define ID_BTN_UNDO       501
 #define ID_BTN_CLEAR      502
 #define ID_BTN_SAVE_2D    503
 #define ID_BTN_EXPORT_3D  504
-#define ID_BTN_LOAD       505
 #define ID_EFFECT_START   600
+#define ID_EDIT_TEXT      701
 
-// Function Declarations
+// Declarations
 void InitCanvasBitmap(int w, int h);
 void PushUndoState();
 void PerformUndo();
-void RenderCanvas(HDC hdc);
-void DrawBrushStroke(int x1, int y1, int x2, int y2);
+void DrawBrushStroke(HDC hdcTarget, int x1, int y1, int x2, int y2);
 void PaintFloodFill(int startX, int startY, COLORREF fillColor);
-void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview);
+void Draw2DShape(HDC hdcTarget, int x1, int y1, int x2, int y2);
 void Add3DPrimitive(ToolType tool);
 void Render3DObjects(HDC hdc);
 void ExportToOBJ(const char *filename);
 void ExportToPNG(const char *filename);
 void BuildSidebarControls();
 
-// Matrix & Vector math
+// Math helper functions
 static Vec3 Vec3_Add(Vec3 a, Vec3 b) { return (Vec3){a.x + b.x, a.y + b.y, a.z + b.z}; }
 static Vec3 Vec3_Sub(Vec3 a, Vec3 b) { return (Vec3){a.x - b.x, a.y - b.y, a.z - b.z}; }
-static Vec3 Vec3_Scale(Vec3 v, double s) { return (Vec3){v.x * s, v.y * s, v.z * s}; }
 static double Vec3_Dot(Vec3 a, Vec3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static Vec3 Vec3_Cross(Vec3 a, Vec3 b) {
     return (Vec3){
@@ -219,17 +186,14 @@ static Vec3 RotateVec3(Vec3 v, Vec3 rot) {
     double radY = rot.y * M_PI / 180.0;
     double radZ = rot.z * M_PI / 180.0;
 
-    // Rotate X
     double y1 = v.y * cos(radX) - v.z * sin(radX);
     double z1 = v.y * sin(radX) + v.z * cos(radX);
     double x1 = v.x;
 
-    // Rotate Y
     double x2 = x1 * cos(radY) + z1 * sin(radY);
     double z2 = -x1 * sin(radY) + z1 * cos(radY);
     double y2 = y1;
 
-    // Rotate Z
     double x3 = x2 * cos(radZ) - y2 * sin(radZ);
     double y3 = x2 * sin(radZ) + y2 * cos(radZ);
     double z3 = z2;
@@ -237,14 +201,9 @@ static Vec3 RotateVec3(Vec3 v, Vec3 rot) {
     return (Vec3){x3, y3, z3};
 }
 
-// Bitmap initialization
 void InitCanvasBitmap(int w, int h) {
-    if (g_App.hdcCanvas) {
-        DeleteDC(g_App.hdcCanvas);
-    }
-    if (g_App.hbmCanvas) {
-        DeleteObject(g_App.hbmCanvas);
-    }
+    if (g_App.hdcCanvas) DeleteDC(g_App.hdcCanvas);
+    if (g_App.hbmCanvas) DeleteObject(g_App.hbmCanvas);
 
     HDC hdcScreen = GetDC(NULL);
     g_App.hdcCanvas = CreateCompatibleDC(hdcScreen);
@@ -261,7 +220,6 @@ void InitCanvasBitmap(int w, int h) {
     SelectObject(g_App.hdcCanvas, g_App.hbmCanvas);
     ReleaseDC(NULL, hdcScreen);
 
-    // Clear canvas to bg color
     HBRUSH hbr = CreateSolidBrush(g_App.canvasBgColor);
     RECT rect = {0, 0, w, h};
     FillRect(g_App.hdcCanvas, &rect, hbr);
@@ -305,8 +263,7 @@ void PerformUndo() {
     }
 }
 
-// Drawing routines
-void DrawBrushStroke(int x1, int y1, int x2, int y2) {
+void DrawBrushStroke(HDC hdcTarget, int x1, int y1, int x2, int y2) {
     COLORREF col = g_App.primaryColor;
     if (g_App.currentTool == TOOL_ERASER) {
         col = g_App.canvasBgColor;
@@ -315,24 +272,17 @@ void DrawBrushStroke(int x1, int y1, int x2, int y2) {
     int radius = g_App.brushThickness / 2;
     if (radius < 1) radius = 1;
 
-    int dx = abs(x2 - x1);
-    int dy = abs(y2 - y1);
-    int steps = (dx > dy ? dx : dy);
-    if (steps == 0) steps = 1;
-
     HPEN hPen = CreatePen(PS_SOLID, g_App.brushThickness, col);
     HBRUSH hBrush = CreateSolidBrush(col);
-    HPEN hOldPen = (HPEN)SelectObject(g_App.hdcCanvas, hPen);
-    HBRUSH hOldBrush = (HBRUSH)SelectObject(g_App.hdcCanvas, hBrush);
+    HPEN hOldPen = (HPEN)SelectObject(hdcTarget, hPen);
+    HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcTarget, hBrush);
 
-    MoveToEx(g_App.hdcCanvas, x1, y1, NULL);
-    LineTo(g_App.hdcCanvas, x2, y2);
+    MoveToEx(hdcTarget, x1, y1, NULL);
+    LineTo(hdcTarget, x2, y2);
+    Ellipse(hdcTarget, x2 - radius, y2 - radius, x2 + radius, y2 + radius);
 
-    // Draw end caps
-    Ellipse(g_App.hdcCanvas, x2 - radius, y2 - radius, x2 + radius, y2 + radius);
-
-    SelectObject(g_App.hdcCanvas, hOldPen);
-    SelectObject(g_App.hdcCanvas, hOldBrush);
+    SelectObject(hdcTarget, hOldPen);
+    SelectObject(hdcTarget, hOldBrush);
     DeleteObject(hPen);
     DeleteObject(hBrush);
 }
@@ -351,23 +301,22 @@ void PaintFloodFill(int startX, int startY, COLORREF fillColor) {
     DeleteObject(hBrush);
 }
 
-void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview) {
-    HDC hdc = g_App.hdcCanvas;
+void Draw2DShape(HDC hdcTarget, int x1, int y1, int x2, int y2) {
     HPEN hPen = CreatePen(PS_SOLID, g_App.brushThickness, g_App.primaryColor);
     HBRUSH hBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
-    HPEN hOldPen = (HPEN)SelectObject(hdc, hPen);
-    HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, hBrush);
+    HPEN hOldPen = (HPEN)SelectObject(hdcTarget, hPen);
+    HBRUSH hOldBrush = (HBRUSH)SelectObject(hdcTarget, hBrush);
 
     switch (g_App.currentTool) {
         case TOOL_2D_LINE:
-            MoveToEx(hdc, x1, y1, NULL);
-            LineTo(hdc, x2, y2);
+            MoveToEx(hdcTarget, x1, y1, NULL);
+            LineTo(hdcTarget, x2, y2);
             break;
         case TOOL_2D_RECT:
-            Rectangle(hdc, x1, y1, x2, y2);
+            Rectangle(hdcTarget, x1, y1, x2, y2);
             break;
         case TOOL_2D_CIRCLE:
-            Ellipse(hdc, x1, y1, x2, y2);
+            Ellipse(hdcTarget, x1, y1, x2, y2);
             break;
         case TOOL_2D_STAR: {
             int cx = (x1 + x2) / 2;
@@ -381,19 +330,18 @@ void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview) {
                 pts[i].x = cx + (int)(rx * r * cos(a));
                 pts[i].y = cy + (int)(ry * r * sin(a));
             }
-            Polygon(hdc, pts, 10);
+            Polygon(hdcTarget, pts, 10);
             break;
         }
         case TOOL_STICKER_SMILEY: {
             int cx = (x1 + x2) / 2;
             int cy = (y1 + y2) / 2;
             int r = (abs(x2 - x1) + abs(y2 - y1)) / 4;
-            Ellipse(hdc, cx - r, cy - r, cx + r, cy + r);
-            // Eyes
-            Ellipse(hdc, cx - r/2 - r/6, cy - r/3 - r/6, cx - r/2 + r/6, cy - r/3 + r/6);
-            Ellipse(hdc, cx + r/2 - r/6, cy - r/3 - r/6, cx + r/2 + r/6, cy - r/3 + r/6);
-            // Smile Arc
-            Arc(hdc, cx - r/2, cy - r/4, cx + r/2, cy + r/2, cx - r/2, cy + r/8, cx + r/2, cy + r/8);
+            if (r < 5) r = 5;
+            Ellipse(hdcTarget, cx - r, cy - r, cx + r, cy + r);
+            Ellipse(hdcTarget, cx - r/2 - r/6, cy - r/3 - r/6, cx - r/2 + r/6, cy - r/3 + r/6);
+            Ellipse(hdcTarget, cx + r/2 - r/6, cy - r/3 - r/6, cx + r/2 + r/6, cy - r/3 + r/6);
+            Arc(hdcTarget, cx - r/2, cy - r/4, cx + r/2, cy + r/2, cx - r/2, cy + r/8, cx + r/2, cy + r/8);
             break;
         }
         case TOOL_STICKER_HEART: {
@@ -401,8 +349,7 @@ void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview) {
             int cy = (y1 + y2) / 2;
             int w = abs(x2 - x1);
             int h = abs(y2 - y1);
-            // Heart geometry approximation using bezier or polygon points
-            POINT pts[8] = {
+            POINT pts[7] = {
                 {cx, cy + h/2},
                 {cx - w/2, cy},
                 {cx - w/2, cy - h/3},
@@ -411,19 +358,19 @@ void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview) {
                 {cx + w/2, cy},
                 {cx, cy + h/2}
             };
-            Polyline(hdc, pts, 7);
+            Polyline(hdcTarget, pts, 7);
             break;
         }
         case TOOL_TEXT: {
             HFONT hFont = CreateFontA(g_App.fontSize, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
                                       DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                                       DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, "Segoe UI");
-            HFONT hOldFont = (HFONT)SelectObject(hdc, hFont);
-            SetTextColor(hdc, g_App.primaryColor);
-            SetBkMode(hdc, TRANSPARENT);
-            TextOutA(hdc, x1, y1, g_App.textBuffer[0] ? g_App.textBuffer : "Paint 3D Text",
+            HFONT hOldFont = (HFONT)SelectObject(hdcTarget, hFont);
+            SetTextColor(hdcTarget, g_App.primaryColor);
+            SetBkMode(hdcTarget, TRANSPARENT);
+            TextOutA(hdcTarget, x1, y1, g_App.textBuffer[0] ? g_App.textBuffer : "Paint 3D Text",
                      g_App.textBuffer[0] ? strlen(g_App.textBuffer) : 13);
-            SelectObject(hdc, hOldFont);
+            SelectObject(hdcTarget, hOldFont);
             DeleteObject(hFont);
             break;
         }
@@ -431,12 +378,11 @@ void Draw2DShape(int x1, int y1, int x2, int y2, BOOL preview) {
             break;
     }
 
-    SelectObject(hdc, hOldPen);
-    SelectObject(hdc, hOldBrush);
+    SelectObject(hdcTarget, hOldPen);
+    SelectObject(hdcTarget, hOldBrush);
     DeleteObject(hPen);
 }
 
-// 3D Object Generation
 void Add3DPrimitive(ToolType tool) {
     Object3D obj = {0};
     obj.pos = (Vec3){0.0, 0.0, 0.0};
@@ -458,17 +404,11 @@ void Add3DPrimitive(ToolType tool) {
         obj.num_triangles = 12;
         obj.triangles = (Triangle3D*)malloc(sizeof(Triangle3D) * 12);
         Triangle3D t[12] = {
-            // Front
             {0, 1, 2, obj.color}, {0, 2, 3, obj.color},
-            // Back
             {5, 4, 7, obj.color}, {5, 7, 6, obj.color},
-            // Top
             {3, 2, 6, obj.color}, {3, 6, 7, obj.color},
-            // Bottom
             {4, 5, 1, obj.color}, {4, 1, 0, obj.color},
-            // Left
             {4, 0, 3, obj.color}, {4, 3, 7, obj.color},
-            // Right
             {1, 5, 6, obj.color}, {1, 6, 2, obj.color}
         };
         memcpy(obj.triangles, t, sizeof(t));
@@ -487,12 +427,9 @@ void Add3DPrimitive(ToolType tool) {
 
             for (int lon = 0; lon <= longBands; lon++) {
                 double phi = lon * 2 * M_PI / longBands;
-                double sinPhi = sin(phi);
-                double cosPhi = cos(phi);
-
-                obj.vertices[vIdx].x = cosPhi * sinTheta;
+                obj.vertices[vIdx].x = cos(phi) * sinTheta;
                 obj.vertices[vIdx].y = cosTheta;
-                obj.vertices[vIdx].z = sinPhi * sinTheta;
+                obj.vertices[vIdx].z = sin(phi) * sinTheta;
                 vIdx++;
             }
         }
@@ -504,7 +441,6 @@ void Add3DPrimitive(ToolType tool) {
             for (int lon = 0; lon < longBands; lon++) {
                 int first = (lat * (longBands + 1)) + lon;
                 int second = first + longBands + 1;
-
                 obj.triangles[tIdx++] = (Triangle3D){first, second, first + 1, obj.color};
                 obj.triangles[tIdx++] = (Triangle3D){second, second + 1, first + 1, obj.color};
             }
@@ -512,7 +448,7 @@ void Add3DPrimitive(ToolType tool) {
     } else if (tool == TOOL_3D_CYLINDER) {
         strcpy(obj.name, "3D Cylinder");
         int segments = 16;
-        obj.num_vertices = segments * 2 + 2; // top/bottom rim + 2 centers
+        obj.num_vertices = segments * 2 + 2;
         obj.vertices = (Vec3*)malloc(sizeof(Vec3) * obj.num_vertices);
 
         int topCenter = segments * 2;
@@ -522,10 +458,8 @@ void Add3DPrimitive(ToolType tool) {
 
         for (int i = 0; i < segments; i++) {
             double angle = i * 2 * M_PI / segments;
-            double x = cos(angle);
-            double z = sin(angle);
-            obj.vertices[i] = (Vec3){x, 1, z};
-            obj.vertices[i + segments] = (Vec3){x, -1, z};
+            obj.vertices[i] = (Vec3){cos(angle), 1, sin(angle)};
+            obj.vertices[i + segments] = (Vec3){cos(angle), -1, sin(angle)};
         }
 
         obj.num_triangles = segments * 4;
@@ -533,12 +467,9 @@ void Add3DPrimitive(ToolType tool) {
         int tIdx = 0;
         for (int i = 0; i < segments; i++) {
             int next = (i + 1) % segments;
-            // Side Quad (2 triangles)
             obj.triangles[tIdx++] = (Triangle3D){i, next, i + segments, obj.color};
             obj.triangles[tIdx++] = (Triangle3D){next, next + segments, i + segments, obj.color};
-            // Top fan
             obj.triangles[tIdx++] = (Triangle3D){topCenter, i, next, obj.color};
-            // Bottom fan
             obj.triangles[tIdx++] = (Triangle3D){bottomCenter, next + segments, i + segments, obj.color};
         }
     } else if (tool == TOOL_3D_CONE) {
@@ -562,9 +493,7 @@ void Add3DPrimitive(ToolType tool) {
         int tIdx = 0;
         for (int i = 0; i < segments; i++) {
             int next = (i + 1) % segments;
-            // Side
             obj.triangles[tIdx++] = (Triangle3D){apex, next, i, obj.color};
-            // Bottom
             obj.triangles[tIdx++] = (Triangle3D){bottomCenter, i, next, obj.color};
         }
     } else if (tool == TOOL_3D_TORUS) {
@@ -607,9 +536,7 @@ void Add3DPrimitive(ToolType tool) {
         }
     }
 
-    // Add to global array
     g_App.objects3D = (Object3D*)realloc(g_App.objects3D, sizeof(Object3D) * (g_App.numObjects3D + 1));
-    // Deselect existing
     for (int i = 0; i < g_App.numObjects3D; i++) g_App.objects3D[i].selected = FALSE;
 
     g_App.objects3D[g_App.numObjects3D] = obj;
@@ -619,7 +546,6 @@ void Add3DPrimitive(ToolType tool) {
     InvalidateRect(g_App.hwndCanvas, NULL, FALSE);
 }
 
-// 3D Rendering & Lighting Engine
 void Render3DObjects(HDC hdc) {
     if (g_App.numObjects3D == 0) return;
 
@@ -632,50 +558,40 @@ void Render3DObjects(HDC hdc) {
     for (int o = 0; o < g_App.numObjects3D; o++) {
         Object3D *obj = &g_App.objects3D[o];
 
-        // Transform vertices
         Vec3 *transVerts = (Vec3*)malloc(sizeof(Vec3) * obj->num_vertices);
         POINT *projVerts = (POINT*)malloc(sizeof(POINT) * obj->num_vertices);
 
         for (int v = 0; v < obj->num_vertices; v++) {
-            // Scale
             Vec3 vert = {
                 obj->vertices[v].x * obj->scale.x,
                 obj->vertices[v].y * obj->scale.y,
                 obj->vertices[v].z * obj->scale.z
             };
-            // Rotate
             vert = RotateVec3(vert, obj->rot);
-            // Translate
             vert = Vec3_Add(vert, obj->pos);
 
             transVerts[v] = vert;
 
-            // Perspective Projection
             double z_dist = vert.z + 500.0;
             if (z_dist < 10.0) z_dist = 10.0;
             projVerts[v].x = cx + (int)(vert.x * fov / z_dist);
             projVerts[v].y = cy - (int)(vert.y * fov / z_dist);
         }
 
-        // Render Triangles with Flat Shading + Lighting
         for (int t = 0; t < obj->num_triangles; t++) {
             Triangle3D *tri = &obj->triangles[t];
             Vec3 v1 = transVerts[tri->v1];
             Vec3 v2 = transVerts[tri->v2];
             Vec3 v3 = transVerts[tri->v3];
 
-            // Face normal
             Vec3 edge1 = Vec3_Sub(v2, v1);
             Vec3 edge2 = Vec3_Sub(v3, v1);
             Vec3 normal = Vec3_Normalize(Vec3_Cross(edge1, edge2));
 
-            // Backface culling (camera at Z = -500 looking at Z = 0)
             if (normal.z < 0.0) {
-                // Calculate directional lighting diffuse component
                 double diffuse = Vec3_Dot(normal, light);
-                if (diffuse < 0.2) diffuse = 0.2; // Ambient light
+                if (diffuse < 0.2) diffuse = 0.2;
 
-                // Apply lighting intensity to object color
                 BYTE r = (BYTE)(GetRValue(obj->color) * diffuse);
                 BYTE g = (BYTE)(GetGValue(obj->color) * diffuse);
                 BYTE b = (BYTE)(GetBValue(obj->color) * diffuse);
@@ -696,13 +612,11 @@ void Render3DObjects(HDC hdc) {
             }
         }
 
-        // Draw 3D Selection Bounding Box / Rotation Gizmo if selected
         if (obj->selected) {
             HPEN hGizmoPen = CreatePen(PS_DOT, 1, RGB(0, 162, 232));
             HPEN hOldPen = (HPEN)SelectObject(hdc, hGizmoPen);
             HBRUSH hOldBrush = (HBRUSH)SelectObject(hdc, GetStockObject(NULL_BRUSH));
 
-            // Compute 2D bounding rectangle
             int minX = 10000, minY = 10000, maxX = -10000, maxY = -10000;
             for (int v = 0; v < obj->num_vertices; v++) {
                 if (projVerts[v].x < minX) minX = projVerts[v].x;
@@ -713,7 +627,6 @@ void Render3DObjects(HDC hdc) {
 
             Rectangle(hdc, minX - 10, minY - 10, maxX + 10, maxY + 10);
 
-            // Draw 3D Gizmo Handles (Rotate X, Y, Z controls)
             int gizmoX = (minX + maxX) / 2;
             int gizmoY = minY - 25;
             Ellipse(hdc, gizmoX - 8, gizmoY - 8, gizmoX + 8, gizmoY + 8);
@@ -730,7 +643,6 @@ void Render3DObjects(HDC hdc) {
     }
 }
 
-// Export functions
 void ExportToOBJ(const char *filename) {
     FILE *fp = fopen(filename, "w");
     if (!fp) return;
@@ -769,7 +681,6 @@ void ExportToOBJ(const char *filename) {
 }
 
 void ExportToPNG(const char *filename) {
-    // Save BMP canvas image
     BITMAPFILEHEADER bfh = {0};
     BITMAPINFOHEADER bih = {0};
 
@@ -781,7 +692,7 @@ void ExportToPNG(const char *filename) {
     bih.biCompression = BI_RGB;
     bih.biSizeImage = g_App.canvasWidth * g_App.canvasHeight * 4;
 
-    bfh.bfType = 0x4D42; // "BM"
+    bfh.bfType = 0x4D42;
     bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bfh.bfSize = bfh.bfOffBits + bih.biSizeImage;
 
@@ -790,42 +701,36 @@ void ExportToPNG(const char *filename) {
         fwrite(&bfh, sizeof(bfh), 1, fp);
         fwrite(&bih, sizeof(bih), 1, fp);
 
-        // Convert DIB to bottom-up BMP ordering
-        BYTE *row = (BYTE*)malloc(g_App.canvasWidth * 4);
         BYTE *pixels = (BYTE*)g_App.pixelBuffer;
         for (int y = g_App.canvasHeight - 1; y >= 0; y--) {
             fwrite(pixels + (y * g_App.canvasWidth * 4), g_App.canvasWidth * 4, 1, fp);
         }
-        free(row);
         fclose(fp);
         MessageBoxA(g_App.hwndMain, "Successfully saved 2D Image Canvas!", "Paint 3D Save", MB_OK | MB_ICONINFORMATION);
     }
 }
 
-// Window Procedure for Canvas
 LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_PAINT: {
             PAINTSTRUCT ps;
             HDC hdc = BeginPaint(hwnd, &ps);
 
-            // Create offscreen double buffer
             HDC hdcMem = CreateCompatibleDC(hdc);
             HBITMAP hbmMem = CreateCompatibleBitmap(hdc, g_App.canvasWidth, g_App.canvasHeight);
             HBITMAP hOldBm = (HBITMAP)SelectObject(hdcMem, hbmMem);
 
-            // Copy 2D canvas
+            // Copy 2D canvas buffer
             BitBlt(hdcMem, 0, 0, g_App.canvasWidth, g_App.canvasHeight, g_App.hdcCanvas, 0, 0, SRCCOPY);
 
-            // Render 3D layer on top
-            Render3DObjects(hdcMem);
-
-            // Render current interactive preview (if drawing line/shape)
+            // Render interactive preview for 2D Shapes or Stickers
             if (g_App.isDrawing && (g_App.currentTab == TAB_2D_SHAPES || g_App.currentTab == TAB_STICKERS)) {
-                Draw2DShape(g_App.startMousePos.x, g_App.startMousePos.y, g_App.lastMousePos.x, g_App.lastMousePos.y, TRUE);
+                Draw2DShape(hdcMem, g_App.startMousePos.x, g_App.startMousePos.y, g_App.lastMousePos.x, g_App.lastMousePos.y);
             }
 
-            // Blit to screen
+            // Render 3D objects on top
+            Render3DObjects(hdcMem);
+
             BitBlt(hdc, 0, 0, g_App.canvasWidth, g_App.canvasHeight, hdcMem, 0, 0, SRCCOPY);
 
             SelectObject(hdcMem, hOldBm);
@@ -849,11 +754,11 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                     PaintFloodFill(g_App.startMousePos.x, g_App.startMousePos.y, g_App.primaryColor);
                     InvalidateRect(hwnd, NULL, FALSE);
                 } else {
-                    DrawBrushStroke(g_App.startMousePos.x, g_App.startMousePos.y, g_App.startMousePos.x, g_App.startMousePos.y);
+                    DrawBrushStroke(g_App.hdcCanvas, g_App.startMousePos.x, g_App.startMousePos.y, g_App.startMousePos.x, g_App.startMousePos.y);
                     InvalidateRect(hwnd, NULL, FALSE);
                 }
             } else if (g_App.currentTab == TAB_TEXT) {
-                Draw2DShape(g_App.startMousePos.x, g_App.startMousePos.y, 0, 0, FALSE);
+                Draw2DShape(g_App.hdcCanvas, g_App.startMousePos.x, g_App.startMousePos.y, 0, 0);
                 InvalidateRect(hwnd, NULL, FALSE);
             }
             return 0;
@@ -864,10 +769,9 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 int y = HIWORD(lParam);
 
                 if (g_App.currentTab == TAB_BRUSHES && g_App.currentTool != TOOL_FILL) {
-                    DrawBrushStroke(g_App.lastMousePos.x, g_App.lastMousePos.y, x, y);
+                    DrawBrushStroke(g_App.hdcCanvas, g_App.lastMousePos.x, g_App.lastMousePos.y, x, y);
                     InvalidateRect(hwnd, NULL, FALSE);
                 } else if (g_App.currentTab == TAB_3D_SHAPES && g_App.numObjects3D > 0 && g_App.selectedObjectIndex >= 0) {
-                    // Rotate selected 3D object dynamically with mouse drag
                     int dx = x - g_App.lastMousePos.x;
                     int dy = y - g_App.lastMousePos.y;
                     Object3D *obj = &g_App.objects3D[g_App.selectedObjectIndex];
@@ -895,20 +799,19 @@ LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 int y = HIWORD(lParam);
 
                 if (g_App.currentTab == TAB_2D_SHAPES || g_App.currentTab == TAB_STICKERS) {
-                    Draw2DShape(g_App.startMousePos.x, g_App.startMousePos.y, x, y, FALSE);
+                    Draw2DShape(g_App.hdcCanvas, g_App.startMousePos.x, g_App.startMousePos.y, x, y);
                     InvalidateRect(hwnd, NULL, FALSE);
                 }
             }
             return 0;
         }
         case WM_ERASEBKGND:
-            return 1; // Prevent flicker
+            return 1;
     }
     return DefWindowProc(hwnd, msg, wParam, lParam);
 }
 
 void BuildSidebarControls() {
-    // Destroy previous sidebar child controls
     HWND hChild = GetWindow(g_App.hwndSidebar, GW_CHILD);
     while (hChild) {
         HWND hNext = GetWindow(hChild, GW_HWNDNEXT);
@@ -926,13 +829,12 @@ void BuildSidebarControls() {
         ToolType toolTypes[] = {TOOL_MARKER, TOOL_CALLIGRAPHY, TOOL_AIRBRUSH, TOOL_OIL_BRUSH, TOOL_WATERCOLOR, TOOL_PIXEL_PEN, TOOL_PENCIL, TOOL_ERASER, TOOL_FILL};
 
         for (int i = 0; i < 9; i++) {
-            HWND hBtn = CreateWindowA("BUTTON", tools[i], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                      15 + (i % 2) * 110, y + (i / 2) * 35, 100, 30,
-                                      g_App.hwndSidebar, (HMENU)(UINT_PTR)(ID_TOOL_START + toolTypes[i]), NULL, NULL);
+            CreateWindowA("BUTTON", tools[i], WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                          15 + (i % 2) * 110, y + (i / 2) * 35, 100, 30,
+                          g_App.hwndSidebar, (HMENU)(UINT_PTR)(ID_TOOL_START + toolTypes[i]), NULL, NULL);
         }
         y += 5 * 35 + 20;
 
-        // Thickness Slider
         CreateWindowA("STATIC", "Thickness:", WS_CHILD | WS_VISIBLE, 15, y, 100, 20, g_App.hwndSidebar, NULL, NULL, NULL);
         HWND hSlideThick = CreateWindowA(TRACKBAR_CLASS, "", WS_CHILD | WS_VISIBLE | TBS_AUTOTICKS,
                                          15, y + 20, 210, 30, g_App.hwndSidebar, (HMENU)ID_SLIDER_THICK, NULL, NULL);
@@ -986,7 +888,7 @@ void BuildSidebarControls() {
         y += 30;
 
         CreateWindowA("STATIC", "Text Content:", WS_CHILD | WS_VISIBLE, 15, y, 100, 20, g_App.hwndSidebar, NULL, NULL, NULL);
-        CreateWindowA("EDIT", g_App.textBuffer, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 15, y + 20, 210, 25, g_App.hwndSidebar, (HMENU)701, NULL, NULL);
+        CreateWindowA("EDIT", g_App.textBuffer, WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL, 15, y + 20, 210, 25, g_App.hwndSidebar, (HMENU)ID_EDIT_TEXT, NULL, NULL);
         y += 55;
 
         g_App.currentTool = TOOL_TEXT;
@@ -1007,31 +909,33 @@ void BuildSidebarControls() {
 
         CreateWindowA("BUTTON", "Clear Canvas", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 15, y, 210, 35, g_App.hwndSidebar, (HMENU)ID_BTN_CLEAR, NULL, NULL);
         y += 45;
-        CreateWindowA("BUTTON", "Save 2D Image (.BMP/.PNG)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 15, y, 210, 35, g_App.hwndSidebar, (HMENU)ID_BTN_SAVE_2D, NULL, NULL);
+        CreateWindowA("BUTTON", "Save 2D Image (.BMP)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 15, y, 210, 35, g_App.hwndSidebar, (HMENU)ID_BTN_SAVE_2D, NULL, NULL);
         y += 45;
         CreateWindowA("BUTTON", "Export 3D Model (.OBJ)", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 15, y, 210, 35, g_App.hwndSidebar, (HMENU)ID_BTN_EXPORT_3D, NULL, NULL);
         y += 55;
     }
 
-    // Color Palette Section (Bottom of Sidebar)
-    y = 380;
+    // Color Palette Section
+    y = 350;
     CreateWindowA("STATIC", "COLOR PALETTE", WS_CHILD | WS_VISIBLE | SS_CENTER, 10, y, 220, 20, g_App.hwndSidebar, NULL, NULL, NULL);
     y += 25;
 
-    for (int i = 0; i < 12; i++) {
-        HWND hColorBtn = CreateWindowA("BUTTON", "", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
-                                       15 + (i % 4) * 52, y + (i / 4) * 35, 45, 30,
-                                       g_App.hwndSidebar, (HMENU)(UINT_PTR)(ID_COLOR_START + i), NULL, NULL);
+    for (int i = 0; i < g_App.paletteCount; i++) {
+        CreateWindowA("BUTTON", "", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW,
+                      15 + (i % 4) * 52, y + (i / 4) * 32, 45, 28,
+                      g_App.hwndSidebar, (HMENU)(UINT_PTR)(ID_COLOR_START + i), NULL, NULL);
     }
+
+    y += ((g_App.paletteCount + 3) / 4) * 32 + 10;
+    CreateWindowA("BUTTON", "+ Add Custom Color", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+                  15, y, 210, 30, g_App.hwndSidebar, (HMENU)ID_BTN_ADD_COLOR, NULL, NULL);
 }
 
 // Main Window Procedure
 LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) {
     switch (msg) {
         case WM_CREATE: {
-            // Create Navigation Toolbar Tabs
-            g_App.hwndToolbar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_OWNERDRAW,
-                                             0, 0, 1000, 45, hwnd, NULL, NULL, NULL);
+            g_App.hwndToolbar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE, 0, 0, 1000, 45, hwnd, NULL, NULL, NULL);
 
             CreateWindowA("BUTTON", "Brushes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 10, 8, 80, 30, hwnd, (HMENU)ID_TAB_BRUSHES, NULL, NULL);
             CreateWindowA("BUTTON", "2D Shapes", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 95, 8, 85, 30, hwnd, (HMENU)ID_TAB_2D, NULL, NULL);
@@ -1043,15 +947,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
             CreateWindowA("BUTTON", "Undo", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 620, 8, 65, 30, hwnd, (HMENU)ID_BTN_UNDO, NULL, NULL);
 
-            // Create Canvas Window
             g_App.hwndCanvas = CreateWindowA("Paint3DCanvasClass", "", WS_CHILD | WS_VISIBLE | WS_BORDER,
                                             10, 55, 750, 580, hwnd, NULL, NULL, NULL);
 
-            // Create Sidebar Control Window
-            g_App.hwndSidebar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_GRAYRECT,
+            // Container panel for sidebar controls
+            g_App.hwndSidebar = CreateWindowA("STATIC", "", WS_CHILD | WS_VISIBLE | SS_NOTIFY,
                                              770, 55, 240, 580, hwnd, NULL, NULL, NULL);
 
-            // Create Status Bar
             g_App.hwndStatus = CreateWindowA(STATUSCLASSNAME, "Paint 3D Ready", WS_CHILD | WS_VISIBLE,
                                             0, 0, 0, 0, hwnd, NULL, NULL, NULL);
 
@@ -1062,13 +964,13 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
 
         case WM_DRAWITEM: {
             DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT*)lParam;
-            if (dis->CtlID >= ID_COLOR_START && dis->CtlID < ID_COLOR_START + 12) {
+            if (dis->CtlID >= ID_COLOR_START && dis->CtlID < ID_COLOR_START + g_App.paletteCount) {
                 int idx = dis->CtlID - ID_COLOR_START;
-                HBRUSH hbr = CreateSolidBrush(g_Palette[idx]);
+                HBRUSH hbr = CreateSolidBrush(g_App.palette[idx]);
                 FillRect(dis->hDC, &dis->rcItem, hbr);
                 DeleteObject(hbr);
 
-                if (g_App.primaryColor == g_Palette[idx]) {
+                if (g_App.primaryColor == g_App.palette[idx]) {
                     HPEN hPen = CreatePen(PS_SOLID, 3, RGB(0, 162, 232));
                     HPEN hOld = (HPEN)SelectObject(dis->hDC, hPen);
                     HBRUSH hOldBr = (HBRUSH)SelectObject(dis->hDC, GetStockObject(NULL_BRUSH));
@@ -1085,7 +987,11 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
         case WM_COMMAND: {
             int wmId = LOWORD(wParam);
 
-            // Tab Switching
+            if (HIWORD(wParam) == EN_CHANGE && wmId == ID_EDIT_TEXT) {
+                GetWindowTextA((HWND)lParam, g_App.textBuffer, sizeof(g_App.textBuffer));
+                return 0;
+            }
+
             if (wmId >= ID_TAB_BRUSHES && wmId <= ID_TAB_CANVAS) {
                 g_App.currentTab = (TabCategory)(wmId - ID_TAB_BRUSHES);
                 BuildSidebarControls();
@@ -1093,7 +999,6 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 return 0;
             }
 
-            // Tool Selection
             if (wmId >= ID_TOOL_START && wmId < ID_TOOL_START + 50) {
                 ToolType tool = (ToolType)(wmId - ID_TOOL_START);
                 g_App.currentTool = tool;
@@ -1104,15 +1009,34 @@ LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) 
                 return 0;
             }
 
-            // Palette Color Selection
-            if (wmId >= ID_COLOR_START && wmId < ID_COLOR_START + 12) {
+            if (wmId >= ID_COLOR_START && wmId < ID_COLOR_START + g_App.paletteCount) {
                 int idx = wmId - ID_COLOR_START;
-                g_App.primaryColor = g_Palette[idx];
+                g_App.primaryColor = g_App.palette[idx];
                 InvalidateRect(g_App.hwndSidebar, NULL, FALSE);
                 return 0;
             }
 
-            // Lighting & Effects
+            if (wmId == ID_BTN_ADD_COLOR) {
+                CHOOSECOLORA cc = {0};
+                cc.lStructSize = sizeof(cc);
+                cc.hwndOwner = hwnd;
+                cc.lpCustColors = g_App.customColors;
+                cc.rgbResult = g_App.primaryColor;
+                cc.Flags = CC_FULLOPEN | CC_RGBINIT;
+
+                if (ChooseColorA(&cc)) {
+                    g_App.primaryColor = cc.rgbResult;
+                    if (g_App.paletteCount < 20) {
+                        g_App.palette[g_App.paletteCount++] = cc.rgbResult;
+                    } else {
+                        g_App.palette[g_App.paletteCount - 1] = cc.rgbResult;
+                    }
+                    BuildSidebarControls();
+                    InvalidateRect(g_App.hwndSidebar, NULL, TRUE);
+                }
+                return 0;
+            }
+
             if (wmId >= ID_EFFECT_START && wmId < ID_EFFECT_START + 5) {
                 int eff = wmId - ID_EFFECT_START;
                 g_App.activeEffect = eff;
@@ -1195,18 +1119,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     icex.dwICC = ICC_WIN95_CLASSES | ICC_BAR_CLASSES;
     InitCommonControlsEx(&icex);
 
-    // Initialize Default State
     g_App.currentTab = TAB_BRUSHES;
     g_App.currentTool = TOOL_MARKER;
-    g_App.primaryColor = RGB(0, 162, 232); // Cyan Blue
+    g_App.primaryColor = RGB(0, 162, 232);
     g_App.brushThickness = 8;
-    g_App.brushOpacity = 100;
+    g_App.fontSize = 28;
     g_App.canvasBgColor = RGB(255, 255, 255);
     g_App.lightDir = (Vec3){0.5, 1.0, -1.0};
     g_App.numObjects3D = 0;
     g_App.objects3D = NULL;
 
-    // Register Canvas Class
+    COLORREF defaultPalette[] = {
+        RGB(0, 0, 0),        RGB(128, 128, 128),  RGB(255, 255, 255),  RGB(237, 28, 36),
+        RGB(255, 127, 39),   RGB(255, 201, 14),   RGB(34, 177, 76),    RGB(0, 162, 232),
+        RGB(63, 72, 204),    RGB(163, 73, 164),   RGB(255, 174, 201),  RGB(185, 122, 87)
+    };
+    g_App.paletteCount = 12;
+    memcpy(g_App.palette, defaultPalette, sizeof(defaultPalette));
+
     WNDCLASSEXA wcxCanvas = {0};
     wcxCanvas.cbSize = sizeof(WNDCLASSEXA);
     wcxCanvas.style = CS_HREDRAW | CS_VREDRAW;
@@ -1216,7 +1146,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wcxCanvas.lpszClassName = "Paint3DCanvasClass";
     RegisterClassExA(&wcxCanvas);
 
-    // Register Main Window Class
     WNDCLASSEXA wcxMain = {0};
     wcxMain.cbSize = sizeof(WNDCLASSEXA);
     wcxMain.style = CS_HREDRAW | CS_VREDRAW;
