@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="A9832B29-3712-4C78-831C-8A190A5F90B2"
+           Name="Paint 3D"
+           Language="1033"
+           Version="1.0.0.0"
+           Manufacturer="Paint 3D Community"
+           UpgradeCode="730A5F9D-2A3A-4E13-86BF-9D8B1C881F42">
+
+    <Package InstallerVersion="200"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Manufacturer="Paint 3D Community"
+             Description="Paint 3D Desktop Application Installer"
+             Comments="Paint 3D allows creating 2D drawings and interactive 3D models" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="Paint3DIcon.ico" SourceFile="app.ico"/>
+    <Property Id="ARPPRODUCTICON" Value="Paint3DIcon.ico" />
+    <Property Id="ARPCOMMENTS" Value="Paint 3D Desktop Application" />
+    <Property Id="ARPHELPLINK" Value="https://github.com" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="Paint 3D">
+          <Component Id="MainExecutable" Guid="3F87A189-9A31-4F43-B041-0E49D34F128D">
+            <File Id="Paint3DEXE" Source="Paint3D.exe" KeyPath="yes">
+              <Shortcut Id="DesktopShortcut"
+                        Directory="DesktopFolder"
+                        Name="Paint 3D"
+                        Description="Create 2D drawings and 3D models"
+                        WorkingDirectory="INSTALLFOLDER"
+                        Icon="Paint3DIcon.ico"
+                        IconIndex="0"
+                        Advertise="yes" />
+              <Shortcut Id="StartMenuShortcut"
+                        Directory="ProgramMenuDir"
+                        Name="Paint 3D"
+                        Description="Create 2D drawings and 3D models"
+                        WorkingDirectory="INSTALLFOLDER"
+                        Icon="Paint3DIcon.ico"
+                        IconIndex="0"
+                        Advertise="yes" />
+            </File>
+          </Component>
+        </Directory>
+      </Directory>
+
+      <Directory Id="DesktopFolder" Name="Desktop" />
+
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="ProgramMenuDir" Name="Paint 3D">
+          <Component Id="ProgramMenuDirComponent" Guid="B14890A2-E8DF-4C82-942C-B2458A381273">
+            <RemoveFolder Id="ProgramMenuDir" On="uninstall" />
+            <RegistryValue Root="HKCU" Key="Software\Paint3D" Name="installed" Type="integer" Value="1" KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainApplication" Title="Paint 3D" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ProgramMenuDirComponent" />
+    </Feature>
+  </Product>
+</Wix>
